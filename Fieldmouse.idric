@@ -90,7 +90,7 @@ read_number first rest =
   case after_integer of
     '.' :: after_dot =>
       let (fraction_digits, remaining) = take_while isDigit after_dot in
-      (pack (first :: integer_digits ++ ('.' :: fraction_digits)), remaining)
+      (pack ((first :: integer_digits) ++ ('.' :: fraction_digits)), remaining)
     _ => (pack (first :: integer_digits), after_integer)
 
 public export
@@ -103,36 +103,49 @@ lex source = lex_characters (unpack source)
     lex_characters ('/' :: '*' :: rest) = do
       remaining <- drop_block_comment rest
       lex_characters remaining
-    lex_characters ('=' :: '=' :: '=' :: rest) = add_symbol "===" rest
-    lex_characters ('!' :: '=' :: '=' :: rest) = add_symbol "!==" rest
-    lex_characters ('=' :: '=' :: rest) = add_symbol "==" rest
-    lex_characters ('!' :: '=' :: rest) = add_symbol "!=" rest
-    lex_characters ('<' :: '=' :: rest) = add_symbol "<=" rest
-    lex_characters ('>' :: '=' :: rest) = add_symbol ">=" rest
-    lex_characters ('&' :: '&' :: rest) = add_symbol "&&" rest
-    lex_characters ('|' :: '|' :: rest) = add_symbol "||" rest
-    lex_characters (quote :: rest) =
-      if quote == '\'' || quote == '"'
+    lex_characters ('=' :: '=' :: '=' :: rest) = do
+      tokens <- lex_characters rest
+      Right (symbol_token "===" :: tokens)
+    lex_characters ('!' :: '=' :: '=' :: rest) = do
+      tokens <- lex_characters rest
+      Right (symbol_token "!==" :: tokens)
+    lex_characters ('=' :: '=' :: rest) = do
+      tokens <- lex_characters rest
+      Right (symbol_token "==" :: tokens)
+    lex_characters ('!' :: '=' :: rest) = do
+      tokens <- lex_characters rest
+      Right (symbol_token "!=" :: tokens)
+    lex_characters ('<' :: '=' :: rest) = do
+      tokens <- lex_characters rest
+      Right (symbol_token "<=" :: tokens)
+    lex_characters ('>' :: '=' :: rest) = do
+      tokens <- lex_characters rest
+      Right (symbol_token ">=" :: tokens)
+    lex_characters ('&' :: '&' :: rest) = do
+      tokens <- lex_characters rest
+      Right (symbol_token "&&" :: tokens)
+    lex_characters ('|' :: '|' :: rest) = do
+      tokens <- lex_characters rest
+      Right (symbol_token "||" :: tokens)
+    lex_characters (character :: rest) =
+      if character == '\'' || character == '"'
         then do
-          (text, remaining) <- read_string quote [] rest
+          (text, remaining) <- read_string character [] rest
           tokens <- lex_characters remaining
           Right (text_token text :: tokens)
-        else if isSpace quote
+        else if isSpace character
           then lex_characters rest
-          else if isDigit quote
-            then let (text, remaining) = read_number quote rest in do
+          else if isDigit character
+            then let (text, remaining) = read_number character rest in do
               tokens <- lex_characters remaining
               Right (number_token text :: tokens)
-            else if identifier_start quote
+            else if identifier_start character
               then let (more, remaining) = take_while identifier_rest rest in do
                 tokens <- lex_characters remaining
-                Right (word_token (pack (quote :: more)) :: tokens)
-              else add_symbol (pack [quote]) rest
-
-    add_symbol : String -> List Char -> Either String (List token)
-    add_symbol symbol remaining = do
-      tokens <- lex_characters remaining
-      Right (symbol_token symbol :: tokens)
+                Right (word_token (pack (character :: more)) :: tokens)
+              else do
+                tokens <- lex_characters rest
+                Right (symbol_token (pack [character]) :: tokens)
 
 expect_symbol : String -> List token -> Either String (List token)
 expect_symbol expected (symbol_token actual :: rest) =
@@ -414,7 +427,14 @@ execute_statement environment (expression_statement body) = do
 execute_statement environment (log_statement arguments) = do
   (values, after_arguments) <- evaluate_many environment arguments
   Right (after_arguments, [joinBy " " (map render values)])
-execute_statement environment (block_statement statements) = execute_statements environment statements
+execute_statement environment (block_statement statements) = execute_block environment statements
+  where
+    execute_block : Environment -> List statement -> Either String (Environment, List String)
+    execute_block current [] = Right (current, [])
+    execute_block current (first :: rest) = do
+      (after_first, first_output) <- execute_statement current first
+      (after_rest, later_output) <- execute_block after_first rest
+      Right (after_rest, first_output ++ later_output)
 execute_statement environment (if_statement condition yes_branch no_branch) = do
   (condition_value, after_condition) <- evaluate environment condition
   if truthy condition_value
