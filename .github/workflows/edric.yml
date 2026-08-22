@@ -19,7 +19,10 @@ jobs:
 
       - name: Bootstrap Edric
         working-directory: .tools/Idric
-        run: ./edric bootstrap
+        run: |
+          export PATH="$PWD/.tools/bin:$PATH"
+          ./edric bootstrap
+          echo "$PWD/.tools/bin" >> "$GITHUB_PATH"
 
       - name: Compile Fieldmouse
         run: .tools/Idric/bootstrap-build/bin/idris2 --build fieldmouse.ipkg
