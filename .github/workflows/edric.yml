@@ -17,14 +17,39 @@ jobs:
           ref: 61970be77769f607cca8650bf424c0f0b22ddee7
           path: .tools/Idric
 
+      - name: Restore Edric bootstrap cache
+        id: edric-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .tools/Idric/.tools
+            .tools/Idric/bootstrap-build
+            .tools/Idric/build
+          key: edric-ubuntu24-x64-61970be77769f607cca8650bf424c0f0b22ddee7
+
       - name: Bootstrap Edric
+        if: steps.edric-cache.outputs.cache-hit != 'true'
         working-directory: .tools/Idric
         run: |
           export PATH="$PWD/.tools/bin:$PATH"
           ./edric bootstrap
-          echo "$PWD/.tools/bin" >> "$GITHUB_PATH"
+
+      - name: Save Edric bootstrap cache
+        if: steps.edric-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .tools/Idric/.tools
+            .tools/Idric/bootstrap-build
+            .tools/Idric/build
+          key: edric-ubuntu24-x64-61970be77769f607cca8650bf424c0f0b22ddee7
+
+      - name: Add Edric toolchain to PATH
+        run: echo "$GITHUB_WORKSPACE/.tools/Idric/.tools/bin" >> "$GITHUB_PATH"
 
       - name: Compile Fieldmouse
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
         run: .tools/Idric/build/exec/idris2 --build fieldmouse.ipkg
 
       - name: Run interpreter smoke test
