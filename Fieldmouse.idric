@@ -1,0 +1,446 @@
+module Fieldmouse
+
+import Data.String
+
+%default covering
+
+public export
+choice value one_of
+  undefined_value
+  null_value
+  boolean_value Bool
+  number_value Double
+  string_value String
+
+public export
+choice token one_of
+  word_token String
+  number_token String
+  text_token String
+  symbol_token String
+
+public export
+choice expression one_of
+  literal_expression value
+  variable_expression String
+  unary_expression String expression
+  binary_expression String expression expression
+  assignment_expression String expression
+
+public export
+choice statement one_of
+  define_statement String expression
+  expression_statement expression
+  log_statement (List expression)
+  block_statement (List statement)
+  if_statement expression statement (Maybe statement)
+  while_statement expression statement
+
+Environment : Type
+Environment = List (String, value)
+
+Parser : Type -> Type
+Parser result = List token -> Either String (result, List token)
+
+identifier_start : Char -> Bool
+identifier_start character =
+  isAlpha character || character == '_' || character == '$'
+
+identifier_rest : Char -> Bool
+identifier_rest character = identifier_start character || isDigit character
+
+take_while : (Char -> Bool) -> List Char -> (List Char, List Char)
+take_while predicate [] = ([], [])
+take_while predicate input@(character :: rest) =
+  if predicate character
+    then let (taken, remaining) = take_while predicate rest
+          in (character :: taken, remaining)
+    else ([], input)
+
+drop_line_comment : List Char -> List Char
+drop_line_comment [] = []
+drop_line_comment ('\n' :: rest) = rest
+drop_line_comment (_ :: rest) = drop_line_comment rest
+
+drop_block_comment : List Char -> Either String (List Char)
+drop_block_comment [] = Left "unterminated block comment"
+drop_block_comment ('*' :: '/' :: rest) = Right rest
+drop_block_comment (_ :: rest) = drop_block_comment rest
+
+read_string : Char -> List Char -> List Char -> Either String (String, List Char)
+read_string quote collected [] = Left "unterminated string"
+read_string quote collected (character :: rest) =
+  if character == quote
+    then Right (pack (reverse collected), rest)
+    else case character of
+      '\\' => case rest of
+        [] => Left "unterminated string escape"
+        'n' :: after => read_string quote ('\n' :: collected) after
+        'r' :: after => read_string quote ('\r' :: collected) after
+        't' :: after => read_string quote ('\t' :: collected) after
+        '\\' :: after => read_string quote ('\\' :: collected) after
+        '\'' :: after => read_string quote ('\'' :: collected) after
+        '"' :: after => read_string quote ('"' :: collected) after
+        escaped :: after => read_string quote (escaped :: collected) after
+      _ => read_string quote (character :: collected) rest
+
+read_number : Char -> List Char -> (String, List Char)
+read_number first rest =
+  let (integer_digits, after_integer) = take_while isDigit rest in
+  case after_integer of
+    '.' :: after_dot =>
+      let (fraction_digits, remaining) = take_while isDigit after_dot in
+      (pack (first :: integer_digits ++ ('.' :: fraction_digits)), remaining)
+    _ => (pack (first :: integer_digits), after_integer)
+
+public export
+lex : String -> Either String (List token)
+lex source = lex_characters (unpack source)
+  where
+    lex_characters : List Char -> Either String (List token)
+    lex_characters [] = Right []
+    lex_characters ('/' :: '/' :: rest) = lex_characters (drop_line_comment rest)
+    lex_characters ('/' :: '*' :: rest) = do
+      remaining <- drop_block_comment rest
+      lex_characters remaining
+    lex_characters ('=' :: '=' :: '=' :: rest) = add_symbol "===" rest
+    lex_characters ('!' :: '=' :: '=' :: rest) = add_symbol "!==" rest
+    lex_characters ('=' :: '=' :: rest) = add_symbol "==" rest
+    lex_characters ('!' :: '=' :: rest) = add_symbol "!=" rest
+    lex_characters ('<' :: '=' :: rest) = add_symbol "<=" rest
+    lex_characters ('>' :: '=' :: rest) = add_symbol ">=" rest
+    lex_characters ('&' :: '&' :: rest) = add_symbol "&&" rest
+    lex_characters ('|' :: '|' :: rest) = add_symbol "||" rest
+    lex_characters (quote :: rest) =
+      if quote == '\'' || quote == '"'
+        then do
+          (text, remaining) <- read_string quote [] rest
+          tokens <- lex_characters remaining
+          Right (text_token text :: tokens)
+        else if isSpace quote
+          then lex_characters rest
+          else if isDigit quote
+            then let (text, remaining) = read_number quote rest in do
+              tokens <- lex_characters remaining
+              Right (number_token text :: tokens)
+            else if identifier_start quote
+              then let (more, remaining) = take_while identifier_rest rest in do
+                tokens <- lex_characters remaining
+                Right (word_token (pack (quote :: more)) :: tokens)
+              else add_symbol (pack [quote]) rest
+
+    add_symbol : String -> List Char -> Either String (List token)
+    add_symbol symbol remaining = do
+      tokens <- lex_characters remaining
+      Right (symbol_token symbol :: tokens)
+
+expect_symbol : String -> List token -> Either String (List token)
+expect_symbol expected (symbol_token actual :: rest) =
+  if actual == expected
+    then Right rest
+    else Left ("expected '" ++ expected ++ "', found '" ++ actual ++ "'")
+expect_symbol expected _ = Left ("expected '" ++ expected ++ "'")
+
+drop_semicolon : List token -> List token
+drop_semicolon (symbol_token ";" :: rest) = rest
+drop_semicolon rest = rest
+
+parse_left_associative : Parser expression -> List String -> Parser expression
+parse_left_associative smaller operators input = do
+  (first, rest) <- smaller input
+  continue first rest
+  where
+    continue : expression -> List token -> Either String (expression, List token)
+    continue left (symbol_token operator :: rest) =
+      if elem operator operators
+        then do
+          (right, after) <- smaller rest
+          continue (binary_expression operator left right) after
+        else Right (left, symbol_token operator :: rest)
+    continue left rest = Right (left, rest)
+
+mutual
+  parse_expression : Parser expression
+  parse_expression = parse_assignment
+
+  parse_assignment : Parser expression
+  parse_assignment input = do
+    (left, rest) <- parse_or input
+    case rest of
+      symbol_token "=" :: after_equals =>
+        case left of
+          variable_expression name => do
+            (right, remaining) <- parse_assignment after_equals
+            Right (assignment_expression name right, remaining)
+          _ => Left "left side of assignment must be a variable"
+      _ => Right (left, rest)
+
+  parse_or : Parser expression
+  parse_or = parse_left_associative parse_and ["||"]
+
+  parse_and : Parser expression
+  parse_and = parse_left_associative parse_equality ["&&"]
+
+  parse_equality : Parser expression
+  parse_equality = parse_left_associative parse_comparison ["==", "!=", "===", "!=="]
+
+  parse_comparison : Parser expression
+  parse_comparison = parse_left_associative parse_addition ["<", "<=", ">", ">="]
+
+  parse_addition : Parser expression
+  parse_addition = parse_left_associative parse_multiplication ["+", "-"]
+
+  parse_multiplication : Parser expression
+  parse_multiplication = parse_left_associative parse_unary ["*", "/", "%"]
+
+  parse_unary : Parser expression
+  parse_unary input@(symbol_token operator :: rest) =
+    if elem operator ["!", "-", "+"]
+      then do
+        (body, remaining) <- parse_unary rest
+        Right (unary_expression operator body, remaining)
+      else parse_primary input
+  parse_unary input = parse_primary input
+
+  parse_primary : Parser expression
+  parse_primary (number_token text :: rest) =
+    case parseDouble text of
+      Just parsed => Right (literal_expression (number_value parsed), rest)
+      Nothing => Left ("invalid number '" ++ text ++ "'")
+  parse_primary (text_token text :: rest) = Right (literal_expression (string_value text), rest)
+  parse_primary (word_token "true" :: rest) = Right (literal_expression (boolean_value True), rest)
+  parse_primary (word_token "false" :: rest) = Right (literal_expression (boolean_value False), rest)
+  parse_primary (word_token "null" :: rest) = Right (literal_expression null_value, rest)
+  parse_primary (word_token "undefined" :: rest) = Right (literal_expression undefined_value, rest)
+  parse_primary (word_token name :: rest) = Right (variable_expression name, rest)
+  parse_primary (symbol_token "(" :: rest) = do
+    (inside, remaining) <- parse_expression rest
+    after_close <- expect_symbol ")" remaining
+    Right (inside, after_close)
+  parse_primary [] = Left "expected expression, found end of input"
+  parse_primary _ = Left "expected expression"
+
+parse_log_arguments : List token -> Either String (List expression, List token)
+parse_log_arguments (symbol_token ")" :: rest) = Right ([], rest)
+parse_log_arguments input = do
+  (first, rest) <- parse_expression input
+  continue [first] rest
+  where
+    continue : List expression -> List token -> Either String (List expression, List token)
+    continue collected (symbol_token "," :: rest) = do
+      (next, remaining) <- parse_expression rest
+      continue (next :: collected) remaining
+    continue collected (symbol_token ")" :: rest) = Right (reverse collected, rest)
+    continue _ _ = Left "expected ',' or ')' in console.log"
+
+mutual
+  parse_statement : Parser statement
+  parse_statement (word_token keyword :: word_token name :: rest) =
+    if elem keyword ["var", "let", "const"]
+      then case rest of
+        symbol_token "=" :: after_equals => do
+          (initial, remaining) <- parse_expression after_equals
+          Right (define_statement name initial, drop_semicolon remaining)
+        _ => Right (define_statement name (literal_expression undefined_value), drop_semicolon rest)
+      else parse_other_statement (word_token keyword :: word_token name :: rest)
+  parse_statement input = parse_other_statement input
+
+  parse_other_statement : Parser statement
+  parse_other_statement (word_token "console" :: symbol_token "." :: word_token "log" :: symbol_token "(" :: rest) = do
+    (arguments, remaining) <- parse_log_arguments rest
+    Right (log_statement arguments, drop_semicolon remaining)
+  parse_other_statement (word_token "if" :: symbol_token "(" :: rest) = do
+    (condition, after_condition) <- parse_expression rest
+    after_close <- expect_symbol ")" after_condition
+    (yes_branch, after_yes) <- parse_statement after_close
+    case after_yes of
+      word_token "else" :: after_else => do
+        (no_branch, remaining) <- parse_statement after_else
+        Right (if_statement condition yes_branch (Just no_branch), remaining)
+      _ => Right (if_statement condition yes_branch Nothing, after_yes)
+  parse_other_statement (word_token "while" :: symbol_token "(" :: rest) = do
+    (condition, after_condition) <- parse_expression rest
+    after_close <- expect_symbol ")" after_condition
+    (body, remaining) <- parse_statement after_close
+    Right (while_statement condition body, remaining)
+  parse_other_statement (symbol_token "{" :: rest) = do
+    (body, remaining) <- parse_block rest
+    Right (block_statement body, remaining)
+  parse_other_statement input = do
+    (body, remaining) <- parse_expression input
+    Right (expression_statement body, drop_semicolon remaining)
+
+  parse_block : List token -> Either String (List statement, List token)
+  parse_block [] = Left "unterminated block"
+  parse_block (symbol_token "}" :: rest) = Right ([], rest)
+  parse_block input = do
+    (first, rest) <- parse_statement input
+    (later, remaining) <- parse_block rest
+    Right (first :: later, remaining)
+
+parse_program_tokens : List token -> Either String (List statement)
+parse_program_tokens [] = Right []
+parse_program_tokens input = do
+  (first, rest) <- parse_statement input
+  later <- parse_program_tokens rest
+  Right (first :: later)
+
+public export
+parse : String -> Either String (List statement)
+parse source = do
+  tokens <- lex source
+  parse_program_tokens tokens
+
+lookup_variable : String -> Environment -> Either String value
+lookup_variable name [] = Left ("unknown variable '" ++ name ++ "'")
+lookup_variable name ((candidate, found) :: rest) =
+  if name == candidate then Right found else lookup_variable name rest
+
+set_variable : String -> value -> Environment -> Environment
+set_variable name new_value [] = [(name, new_value)]
+set_variable name new_value ((candidate, old_value) :: rest) =
+  if name == candidate
+    then (candidate, new_value) :: rest
+    else (candidate, old_value) :: set_variable name new_value rest
+
+define_variable : String -> value -> Environment -> Environment
+define_variable name new_value environment = (name, new_value) :: environment
+
+public export
+render : value -> String
+render undefined_value = "undefined"
+render null_value = "null"
+render (boolean_value True) = "true"
+render (boolean_value False) = "false"
+render (number_value number) = show number
+render (string_value text) = text
+
+truthy : value -> Bool
+truthy undefined_value = False
+truthy null_value = False
+truthy (boolean_value truth) = truth
+truthy (number_value number) = number /= 0.0
+truthy (string_value text) = text /= ""
+
+number_from_value : value -> Either String Double
+number_from_value (number_value number) = Right number
+number_from_value (boolean_value True) = Right 1.0
+number_from_value (boolean_value False) = Right 0.0
+number_from_value null_value = Right 0.0
+number_from_value (string_value text) =
+  case parseDouble text of
+    Just number => Right number
+    Nothing => Left ("cannot convert '" ++ text ++ "' to number")
+number_from_value undefined_value = Left "cannot convert undefined to number"
+
+same_value : value -> value -> Bool
+same_value undefined_value undefined_value = True
+same_value null_value null_value = True
+same_value (boolean_value left) (boolean_value right) = left == right
+same_value (number_value left) (number_value right) = left == right
+same_value (string_value left) (string_value right) = left == right
+same_value _ _ = False
+
+calculate_numeric : String -> Double -> Double -> Either String value
+calculate_numeric "+" left right = Right (number_value (left + right))
+calculate_numeric "-" left right = Right (number_value (left - right))
+calculate_numeric "*" left right = Right (number_value (left * right))
+calculate_numeric "/" left right = Right (number_value (left / right))
+calculate_numeric "%" left right = Left "remainder is not implemented yet"
+calculate_numeric "<" left right = Right (boolean_value (left < right))
+calculate_numeric "<=" left right = Right (boolean_value (left <= right))
+calculate_numeric ">" left right = Right (boolean_value (left > right))
+calculate_numeric ">=" left right = Right (boolean_value (left >= right))
+calculate_numeric operator _ _ = Left ("unsupported numeric operator '" ++ operator ++ "'")
+
+calculate_binary : String -> value -> value -> Either String value
+calculate_binary "+" (string_value left) right = Right (string_value (left ++ render right))
+calculate_binary "+" left (string_value right) = Right (string_value (render left ++ right))
+calculate_binary "==" left right = Right (boolean_value (same_value left right))
+calculate_binary "===" left right = Right (boolean_value (same_value left right))
+calculate_binary "!=" left right = Right (boolean_value (not (same_value left right)))
+calculate_binary "!==" left right = Right (boolean_value (not (same_value left right)))
+calculate_binary operator left right = do
+  left_number <- number_from_value left
+  right_number <- number_from_value right
+  calculate_numeric operator left_number right_number
+
+mutual
+  evaluate : Environment -> expression -> Either String (value, Environment)
+  evaluate environment (literal_expression literal) = Right (literal, environment)
+  evaluate environment (variable_expression name) = do
+    found <- lookup_variable name environment
+    Right (found, environment)
+  evaluate environment (assignment_expression name body) = do
+    (new_value, after_body) <- evaluate environment body
+    Right (new_value, set_variable name new_value after_body)
+  evaluate environment (unary_expression operator body) = do
+    (body_value, after_body) <- evaluate environment body
+    case operator of
+      "!" => Right (boolean_value (not (truthy body_value)), after_body)
+      "-" => do
+        number <- number_from_value body_value
+        Right (number_value (-number), after_body)
+      "+" => do
+        number <- number_from_value body_value
+        Right (number_value number, after_body)
+      _ => Left ("unsupported unary operator '" ++ operator ++ "'")
+  evaluate environment (binary_expression "&&" left right) = do
+    (left_value, after_left) <- evaluate environment left
+    if truthy left_value then evaluate after_left right else Right (left_value, after_left)
+  evaluate environment (binary_expression "||" left right) = do
+    (left_value, after_left) <- evaluate environment left
+    if truthy left_value then Right (left_value, after_left) else evaluate after_left right
+  evaluate environment (binary_expression operator left right) = do
+    (left_value, after_left) <- evaluate environment left
+    (right_value, after_right) <- evaluate after_left right
+    answer <- calculate_binary operator left_value right_value
+    Right (answer, after_right)
+
+  evaluate_many : Environment -> List expression -> Either String (List value, Environment)
+  evaluate_many environment [] = Right ([], environment)
+  evaluate_many environment (first :: rest) = do
+    (first_value, after_first) <- evaluate environment first
+    (later_values, after_later) <- evaluate_many after_first rest
+    Right (first_value :: later_values, after_later)
+
+execute_statement : Environment -> statement -> Either String (Environment, List String)
+execute_statement environment (define_statement name initial) = do
+  (initial_value, after_initial) <- evaluate environment initial
+  Right (define_variable name initial_value after_initial, [])
+execute_statement environment (expression_statement body) = do
+  (_, after_body) <- evaluate environment body
+  Right (after_body, [])
+execute_statement environment (log_statement arguments) = do
+  (values, after_arguments) <- evaluate_many environment arguments
+  Right (after_arguments, [joinBy " " (map render values)])
+execute_statement environment (block_statement statements) = execute_statements environment statements
+execute_statement environment (if_statement condition yes_branch no_branch) = do
+  (condition_value, after_condition) <- evaluate environment condition
+  if truthy condition_value
+    then execute_statement after_condition yes_branch
+    else case no_branch of
+      Nothing => Right (after_condition, [])
+      Just branch => execute_statement after_condition branch
+execute_statement environment loop@(while_statement condition body) = do
+  (condition_value, after_condition) <- evaluate environment condition
+  if truthy condition_value
+    then do
+      (after_body, body_output) <- execute_statement after_condition body
+      (after_loop, later_output) <- execute_statement after_body loop
+      Right (after_loop, body_output ++ later_output)
+    else Right (after_condition, [])
+
+execute_statements : Environment -> List statement -> Either String (Environment, List String)
+execute_statements environment [] = Right (environment, [])
+execute_statements environment (first :: rest) = do
+  (after_first, first_output) <- execute_statement environment first
+  (after_rest, later_output) <- execute_statements after_first rest
+  Right (after_rest, first_output ++ later_output)
+
+public export
+run : String -> Either String (List String)
+run source = do
+  program <- parse source
+  (_, output) <- execute_statements [] program
+  Right output
