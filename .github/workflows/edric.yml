@@ -2,7 +2,7 @@ name: Edric rewrite
 
 on:
   push:
-    branches: [edric-rewrite]
+    branches: [edric-rewrite, icu-compiler-smoke]
   pull_request:
 
 jobs:
@@ -58,3 +58,101 @@ jobs:
           printf '%s\n' "$output"
           test "$output" = "sum 10.0
           ok"
+
+      - name: Install ICU native dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev
+
+      - name: Checkout ICU
+        uses: actions/checkout@v4
+        with:
+          repository: isomorphisms/icu
+          ref: edric-http-get-post
+          path: .tools/icu
+
+      - name: Compile ICU through Edric
+        working-directory: .tools/icu
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+        run: |
+          make check-native
+          make IDRIC="$GITHUB_WORKSPACE/.tools/Idric/build/exec/idris2"
+
+      - name: Start deterministic ICU HTTP and HTTPS servers
+        run: |
+          TLS_DIR="$RUNNER_TEMP/icu-tls"
+          mkdir -p "$TLS_DIR"
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$TLS_DIR/ca.key" -out "$TLS_DIR/ca.pem" -days 1 \
+            -subj '/CN=ICU test CA'
+          openssl req -newkey rsa:2048 -nodes \
+            -keyout "$TLS_DIR/server.key" -out "$TLS_DIR/server.csr" \
+            -subj '/CN=localhost'
+          printf 'subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n' > "$TLS_DIR/server.ext"
+          openssl x509 -req -in "$TLS_DIR/server.csr" \
+            -CA "$TLS_DIR/ca.pem" -CAkey "$TLS_DIR/ca.key" -CAcreateserial \
+            -out "$TLS_DIR/server.pem" -days 1 -extfile "$TLS_DIR/server.ext"
+
+          cat > "$RUNNER_TEMP/icu-server.py" <<'PY'
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+          import os
+          import ssl
+          import threading
+          import time
+
+          class Handler(BaseHTTPRequestHandler):
+              protocol_version = "HTTP/1.0"
+
+              def log_message(self, format, *args):
+                  pass
+
+              def reply(self, body):
+                  encoded = body.encode("ascii")
+                  self.send_response(200)
+                  self.send_header("Content-Type", "text/plain")
+                  self.send_header("Content-Length", str(len(encoded)))
+                  self.end_headers()
+                  self.wfile.write(encoded)
+
+              def do_GET(self):
+                  self.reply("GET " + self.path)
+
+              def do_POST(self):
+                  length = int(self.headers.get("Content-Length", "0"))
+                  body = self.rfile.read(length).decode("ascii")
+                  self.reply("POST " + self.path + " " + body)
+
+          tls_dir = os.environ["TLS_DIR"]
+          plain = ThreadingHTTPServer(("127.0.0.1", 18080), Handler)
+          secure = ThreadingHTTPServer(("127.0.0.1", 18443), Handler)
+          context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+          context.load_cert_chain(
+              os.path.join(tls_dir, "server.pem"),
+              os.path.join(tls_dir, "server.key"),
+          )
+          secure.socket = context.wrap_socket(secure.socket, server_side=True)
+
+          threading.Thread(target=plain.serve_forever, daemon=True).start()
+          threading.Thread(target=secure.serve_forever, daemon=True).start()
+          while True:
+              time.sleep(60)
+          PY
+
+          TLS_DIR="$TLS_DIR" python3 "$RUNNER_TEMP/icu-server.py" \
+            > "$RUNNER_TEMP/icu-server.log" 2>&1 &
+          sleep 1
+
+      - name: Run compiled ICU over HTTP and verified HTTPS
+        working-directory: .tools/icu
+        env:
+          SSL_CERT_FILE: ${{ runner.temp }}/icu-tls/ca.pem
+        run: |
+          test "$(./build/exec/icu get http://127.0.0.1:18080/plain?x=1)" = 'GET /plain?x=1'
+          test "$(./build/exec/icu post http://127.0.0.1:18080/post hello)" = 'POST /post hello'
+          test "$(./build/exec/icu get https://localhost:18443/secure)" = 'GET /secure'
+          test "$(./build/exec/icu post https://localhost:18443/secure-post hello)" = 'POST /secure-post hello'
+
+      - name: Show ICU server log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/icu-server.log" 2>/dev/null || true
