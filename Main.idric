@@ -10,17 +10,22 @@ print_output (line :: rest) = do
   putStrLn line
   print_output rest
 
+report_failure : String -> IO ()
+report_failure message = do
+  putStrLn ("fieldmouse: " ++ message)
+  exitFailure
+
 run_source : String -> IO ()
 run_source source =
   case run source of
-    Left problem => putStrLn ("fieldmouse: " ++ problem)
+    Left problem => report_failure problem
     Right output => print_output output
 
 run_file : String -> IO ()
 run_file path = do
   result <- readFile path
   case result of
-    Left problem => putStrLn ("fieldmouse: cannot read " ++ path ++ ": " ++ show problem)
+    Left problem => report_failure ("cannot read " ++ path ++ ": " ++ show problem)
     Right source => run_source source
 
 main : IO ()
@@ -29,4 +34,4 @@ main = do
   case arguments of
     _ :: "-e" :: source :: [] => run_source source
     _ :: path :: [] => run_file path
-    _ => putStrLn "usage: fieldmouse [-e javascript | file.js]"
+    _ => report_failure "usage: fieldmouse [-e source | file]"
