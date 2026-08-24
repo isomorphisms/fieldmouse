@@ -12,8 +12,9 @@ pass : String -> IO ()
 pass name = putStrLn ("ok: " ++ name)
 
 assert_run : String -> String -> List String -> IO ()
-assert_run name source expected =
-  case run source of
+assert_run name source expected = do
+  result <- run source
+  case result of
     Left problem => fail (name ++ " — " ++ problem)
     Right actual =>
       if actual == expected
@@ -21,8 +22,9 @@ assert_run name source expected =
         else fail (name ++ " — expected " ++ show expected ++ ", found " ++ show actual)
 
 assert_rejected : String -> String -> IO ()
-assert_rejected name source =
-  case run source of
+assert_rejected name source = do
+  result <- run source
+  case result of
     Left _ => pass name
     Right output => fail (name ++ " — unexpectedly ran with output " ++ show output)
 

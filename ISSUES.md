@@ -24,7 +24,21 @@ Done when:
 - `object.name`, `object[name]`, and method-call syntax work;
 - recursion is not required merely to claim this slice complete.
 
-## 3. Implement the small Node build-script surface
+## 3. Provide native text file I/O
+
+The first useful file surface should not wait for objects, property calls, or a Node compatibility layer.
+
+Surface:
+- `readText(path)` returns the complete text;
+- `writeText(path, text)` creates or truncates a file;
+- `appendText(path, text)` creates or appends to a file;
+- `fileExists(path)` returns a Boolean;
+- I/O errors stop execution with an operation, path, and underlying error;
+- tests exercise create, truncate, append, read, existence, invalid arguments, and missing-file failure.
+
+This slice does not include directories, binary buffers, `fs`, `path`, `process`, or general function compatibility.
+
+## 4. Implement the small Node build-script surface
 
 Fieldmouse is not trying to become all of Node. Implement only the filesystem/process/path behavior that real project build scripts require.
 
@@ -36,7 +50,9 @@ Initial surface:
 
 Add features from real scripts, not from a Node compatibility checklist.
 
-## 4. Keep Fieldmouse building against current Edriç
+The native text calls above are useful independently, but do not satisfy this Node-facing backlog item.
+
+## 5. Keep Fieldmouse building against current Edriç
 
 Fieldmouse CI is pinned to an older Edriç commit while Catfood follows current Idriç/Edriç development. That creates a compiler-drift trap.
 
@@ -46,7 +62,7 @@ Done when:
 - compiler incompatibilities fail in CI with a focused diagnostic;
 - a compiler update cannot silently leave Fieldmouse unbuildable.
 
-## 5. Make the Catfood installation contract green
+## 6. Make the Catfood installation contract green
 
 Catfood should be able to feed Fieldmouse into a fresh environment and leave a runnable stable command behind.
 
@@ -59,7 +75,7 @@ Done when:
 
 Catfood PR #11 is the current integration attempt.
 
-## 6. Build a real-world JavaScript fixture corpus
+## 7. Build a real-world JavaScript fixture corpus
 
 Tiny parser tests are not enough to tell whether Fieldmouse can replace Node for the build-script jobs we actually care about.
 
@@ -73,15 +89,6 @@ Add a fixture directory containing small, legal-to-copy scripts representative o
 
 Each unsupported construct should become a specific compatibility issue rather than a vague "support JavaScript" task.
 
-## 7. Decide when the Edriç rewrite becomes the repository default
+## 8. Preserve the default-branch transition
 
-`master` still exposes the old MuJS-derived C implementation while the active rewrite lives on `edric-rewrite`.
-
-Do not flip the default merely for cosmetic reasons. Make the transition when the rewrite has enough useful behavior that opening the repository should naturally land on it.
-
-Before switching:
-- the core interpreter smoke suite is green;
-- arrays/objects and functions/calls are present;
-- the intended Node build-script slice is documented;
-- Catfood can build and expose Fieldmouse;
-- the old C implementation remains recoverable from Git history without dominating the active tree.
+The Edriç rewrite is now on `master`, while the old C implementation remains recoverable from Git history. Keep the active implementation visible at the repository root and do not restore the old MuJS directory layout as compatibility work grows.

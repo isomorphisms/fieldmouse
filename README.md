@@ -27,9 +27,13 @@ The Edriç interpreter currently has:
 - provisional `var`, `let`, and `const` bindings;
 - blocks, `if` / `else`, and `while`;
 - `console.log(...)`;
+- native text-file calls: `readText(path)`, `writeText(path, text)`,
+  `appendText(path, text)`, and `fileExists(path)`;
 - execution from `-e` or a source file.
 
-This is intentionally smaller than ECMAScript and much smaller than Node. Arrays and objects, functions, property access and calls, then the small `fs` / `path` / `process` surface required by real build scripts remain to be implemented.
+The file calls are deliberately a Field Mouse surface, not a claim of Node compatibility. They operate on paths relative to the current working directory and do not create parent directories. `writeText` truncates or creates a file; `appendText` preserves existing contents or creates a file; both return `undefined`. Failed reads and writes identify the operation and path and return a failing process status.
+
+This is intentionally smaller than ECMAScript and much smaller than Node. Arrays and objects, user-defined functions, property access, `fs`, `path`, `process`, directory operations, and binary buffers remain separate work.
 
 ## Build and test
 

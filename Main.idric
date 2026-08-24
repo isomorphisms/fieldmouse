@@ -16,8 +16,9 @@ report_failure message = do
   exitFailure
 
 run_source : String -> IO ()
-run_source source =
-  case run source of
+run_source source = do
+  result <- run source
+  case result of
     Left problem => report_failure problem
     Right output => print_output output
 
