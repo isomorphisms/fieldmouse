@@ -2,7 +2,7 @@ name: Edric rewrite
 
 on:
   push:
-    branches: [edric-rewrite]
+    branches: [master, edric-rewrite]
   pull_request:
 
 jobs:
@@ -58,3 +58,31 @@ jobs:
           printf '%s\n' "$output"
           test "$output" = "sum 10.0
           ok"
+
+      - name: Test native text file I/O
+        run: |
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          path="$work/note.txt"
+          script="$work/file-io.js"
+
+          printf 'var path = "%s"; console.log(fileExists(path)); writeText(path, "old"); writeText(path, "alpha"); appendText(path, " beta"); console.log(fileExists(path)); console.log(readText(path));\n' "$path" > "$script"
+
+          output=$(build/exec/fieldmouse "$script")
+          printf '%s\n' "$output"
+          test "$output" = "false
+          true
+          alpha beta"
+          test "$(cat "$path")" = "alpha beta"
+
+          if build/exec/fieldmouse -e "readText(\"$work/missing.txt\");" > "$work/missing.out" 2> "$work/missing.err"; then
+            echo "readText unexpectedly succeeded for a missing file" >&2
+            exit 1
+          fi
+          grep -F "fieldmouse: readText '$work/missing.txt': File Not Found" "$work/missing.err"
+
+          if build/exec/fieldmouse -e 'writeText("only-one");' > "$work/arity.out" 2> "$work/arity.err"; then
+            echo "writeText unexpectedly accepted one argument" >&2
+            exit 1
+          fi
+          grep -F "fieldmouse: writeText: expected 2 arguments, found 1" "$work/arity.err"

@@ -11,16 +11,17 @@ print_output (line :: rest) = do
   print_output rest
 
 run_source : String -> IO ()
-run_source source =
-  case run source of
-    Left problem => putStrLn ("fieldmouse: " ++ problem)
+run_source source = do
+  result <- run source
+  case result of
+    Left problem => die ("fieldmouse: " ++ problem)
     Right output => print_output output
 
 run_file : String -> IO ()
 run_file path = do
   result <- readFile path
   case result of
-    Left problem => putStrLn ("fieldmouse: cannot read " ++ path ++ ": " ++ show problem)
+    Left problem => die ("fieldmouse: cannot read " ++ path ++ ": " ++ show problem)
     Right source => run_source source
 
 main : IO ()

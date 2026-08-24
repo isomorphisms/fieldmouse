@@ -2,7 +2,7 @@
 
 Fieldmouse is a small JavaScript interpreter being rewritten in **Edriç**.
 
-The repository started from MuJS. The C implementation remains in Git history and on `master`; the `edric-rewrite` line deliberately does not preserve MuJS's `src` / `include` / `docs` / `tests` directory layout. The active implementation is meant to be visible when the repository opens.
+The repository started from MuJS. The old C implementation remains recoverable from Git history; the active implementation is the small Edriç core visible in the repository now.
 
 ## Current slice
 
@@ -14,9 +14,13 @@ The Edriç interpreter currently has:
 - `var`, `let`, and `const` bindings;
 - blocks, `if` / `else`, and `while`;
 - `console.log(...)`;
+- native text-file calls: `readText(path)`, `writeText(path, text)`,
+  `appendText(path, text)`, and `fileExists(path)`;
 - execution from `-e` or a `.js` file.
 
-This is intentionally smaller than ECMAScript and much smaller than Node. The next useful compatibility work is arrays and objects, functions, property access and calls, then the small `fs` / `path` / `process` surface that build scripts actually use. Exact standards compliance is not the design constraint.
+The file calls are deliberately a Fieldmouse surface, not a claim of Node compatibility. They operate on paths relative to the current working directory, do not create parent directories, and report read/write failures as interpreter errors with a nonzero exit status. `writeText` truncates or creates a file; `appendText` preserves existing contents or creates a file; both return `undefined`.
+
+Fieldmouse remains intentionally smaller than ECMAScript and much smaller than Node. Arrays and objects, user-defined functions, property access, `fs`, `path`, and `process` remain separate work. Exact standards compliance is not the design constraint.
 
 ## Build
 

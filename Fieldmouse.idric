@@ -1,6 +1,7 @@
 module Fieldmouse
 
 import Data.String
+import System.File
 
 %default covering
 
@@ -23,6 +24,7 @@ public export
 choice expression one_of
   literal_expression value
   variable_expression String
+  native_call_expression String (List expression)
   unary_expression String expression
   binary_expression String expression expression
   assignment_expression String expression
@@ -225,6 +227,25 @@ mutual
   parse_primary (word_token "false" :: rest) = Right (literal_expression (boolean_value False), rest)
   parse_primary (word_token "null" :: rest) = Right (literal_expression null_value, rest)
   parse_primary (word_token "undefined" :: rest) = Right (literal_expression undefined_value, rest)
+  parse_primary (word_token name :: symbol_token "(" :: rest) =
+    if elem name ["readText", "writeText", "appendText", "fileExists"]
+      then do
+        (arguments, remaining) <- parse_native_arguments rest
+        Right (native_call_expression name arguments, remaining)
+      else Left ("unsupported native call '" ++ name ++ "'")
+    where
+      parse_native_arguments : List token -> Either String (List expression, List token)
+      parse_native_arguments (symbol_token ")" :: remaining) = Right ([], remaining)
+      parse_native_arguments input = do
+        (first, after_first) <- parse_expression input
+        continue [first] after_first
+        where
+          continue : List expression -> List token -> Either String (List expression, List token)
+          continue collected (symbol_token "," :: after_comma) = do
+            (next, after_next) <- parse_expression after_comma
+            continue (next :: collected) after_next
+          continue collected (symbol_token ")" :: remaining) = Right (reverse collected, remaining)
+          continue _ _ = Left "expected ',' or ')' in native call"
   parse_primary (word_token name :: rest) = Right (variable_expression name, rest)
   parse_primary (symbol_token "(" :: rest) = do
     (inside, remaining) <- parse_expression rest
@@ -378,89 +399,207 @@ calculate_binary operator left right = do
   right_number <- number_from_value right
   calculate_numeric operator left_number right_number
 
+file_problem : String -> String -> FileError -> String
+file_problem operation path problem =
+  operation ++ " '" ++ path ++ "': " ++ show problem
+
+native_arity_problem : String -> Nat -> Nat -> String
+native_arity_problem name expected actual =
+  name ++ ": expected " ++ show expected ++ " argument" ++
+  (if expected == 1 then "" else "s") ++ ", found " ++ show actual
+
+evaluate_native : Environment -> String -> List value -> IO (Either String (value, Environment))
+evaluate_native environment "readText" [string_value path] = do
+  result <- readFile path
+  case result of
+    Left problem => pure (Left (file_problem "readText" path problem))
+    Right contents => pure (Right (string_value contents, environment))
+evaluate_native environment "readText" [_] =
+  pure (Left "readText: path must be text")
+evaluate_native environment "readText" arguments =
+  pure (Left (native_arity_problem "readText" 1 (length arguments)))
+evaluate_native environment "writeText" [string_value path, string_value contents] = do
+  result <- writeFile path contents
+  case result of
+    Left problem => pure (Left (file_problem "writeText" path problem))
+    Right () => pure (Right (undefined_value, environment))
+evaluate_native environment "writeText" [_, _] =
+  pure (Left "writeText: path and contents must be text")
+evaluate_native environment "writeText" arguments =
+  pure (Left (native_arity_problem "writeText" 2 (length arguments)))
+evaluate_native environment "appendText" [string_value path, string_value contents] = do
+  result <- appendFile path contents
+  case result of
+    Left problem => pure (Left (file_problem "appendText" path problem))
+    Right () => pure (Right (undefined_value, environment))
+evaluate_native environment "appendText" [_, _] =
+  pure (Left "appendText: path and contents must be text")
+evaluate_native environment "appendText" arguments =
+  pure (Left (native_arity_problem "appendText" 2 (length arguments)))
+evaluate_native environment "fileExists" [string_value path] = do
+  found <- exists path
+  pure (Right (boolean_value found, environment))
+evaluate_native environment "fileExists" [_] =
+  pure (Left "fileExists: path must be text")
+evaluate_native environment "fileExists" arguments =
+  pure (Left (native_arity_problem "fileExists" 1 (length arguments)))
+evaluate_native _ name _ =
+  pure (Left ("unsupported native call '" ++ name ++ "'"))
+
 mutual
-  evaluate : Environment -> expression -> Either String (value, Environment)
-  evaluate environment (literal_expression literal) = Right (literal, environment)
-  evaluate environment (variable_expression name) = do
-    found <- lookup_variable name environment
-    Right (found, environment)
+  evaluate : Environment -> expression -> IO (Either String (value, Environment))
+  evaluate environment (literal_expression literal) = pure (Right (literal, environment))
+  evaluate environment (variable_expression name) =
+    case lookup_variable name environment of
+      Left problem => pure (Left problem)
+      Right found => pure (Right (found, environment))
+  evaluate environment (native_call_expression name arguments) = do
+    result <- evaluate_many environment arguments
+    case result of
+      Left problem => pure (Left problem)
+      Right (values, after_arguments) => evaluate_native after_arguments name values
   evaluate environment (assignment_expression name body) = do
-    (new_value, after_body) <- evaluate environment body
-    Right (new_value, set_variable name new_value after_body)
+    result <- evaluate environment body
+    case result of
+      Left problem => pure (Left problem)
+      Right (new_value, after_body) =>
+        pure (Right (new_value, set_variable name new_value after_body))
   evaluate environment (unary_expression operator body) = do
-    (body_value, after_body) <- evaluate environment body
-    case operator of
-      "!" => Right (boolean_value (not (truthy body_value)), after_body)
-      "-" => do
-        number <- number_from_value body_value
-        Right (number_value (-number), after_body)
-      "+" => do
-        number <- number_from_value body_value
-        Right (number_value number, after_body)
-      _ => Left ("unsupported unary operator '" ++ operator ++ "'")
+    result <- evaluate environment body
+    case result of
+      Left problem => pure (Left problem)
+      Right (body_value, after_body) =>
+        case operator of
+          "!" => pure (Right (boolean_value (not (truthy body_value)), after_body))
+          "-" => case number_from_value body_value of
+            Left problem => pure (Left problem)
+            Right number => pure (Right (number_value (-number), after_body))
+          "+" => case number_from_value body_value of
+            Left problem => pure (Left problem)
+            Right number => pure (Right (number_value number, after_body))
+          _ => pure (Left ("unsupported unary operator '" ++ operator ++ "'"))
   evaluate environment (binary_expression "&&" left right) = do
-    (left_value, after_left) <- evaluate environment left
-    if truthy left_value then evaluate after_left right else Right (left_value, after_left)
+    result <- evaluate environment left
+    case result of
+      Left problem => pure (Left problem)
+      Right (left_value, after_left) =>
+        if truthy left_value
+          then evaluate after_left right
+          else pure (Right (left_value, after_left))
   evaluate environment (binary_expression "||" left right) = do
-    (left_value, after_left) <- evaluate environment left
-    if truthy left_value then Right (left_value, after_left) else evaluate after_left right
+    result <- evaluate environment left
+    case result of
+      Left problem => pure (Left problem)
+      Right (left_value, after_left) =>
+        if truthy left_value
+          then pure (Right (left_value, after_left))
+          else evaluate after_left right
   evaluate environment (binary_expression operator left right) = do
-    (left_value, after_left) <- evaluate environment left
-    (right_value, after_right) <- evaluate after_left right
-    answer <- calculate_binary operator left_value right_value
-    Right (answer, after_right)
+    left_result <- evaluate environment left
+    case left_result of
+      Left problem => pure (Left problem)
+      Right (left_value, after_left) => do
+        right_result <- evaluate after_left right
+        case right_result of
+          Left problem => pure (Left problem)
+          Right (right_value, after_right) =>
+            case calculate_binary operator left_value right_value of
+              Left problem => pure (Left problem)
+              Right answer => pure (Right (answer, after_right))
 
-  evaluate_many : Environment -> List expression -> Either String (List value, Environment)
-  evaluate_many environment [] = Right ([], environment)
+  evaluate_many : Environment -> List expression -> IO (Either String (List value, Environment))
+  evaluate_many environment [] = pure (Right ([], environment))
   evaluate_many environment (first :: rest) = do
-    (first_value, after_first) <- evaluate environment first
-    (later_values, after_later) <- evaluate_many after_first rest
-    Right (first_value :: later_values, after_later)
+    first_result <- evaluate environment first
+    case first_result of
+      Left problem => pure (Left problem)
+      Right (first_value, after_first) => do
+        later_result <- evaluate_many after_first rest
+        case later_result of
+          Left problem => pure (Left problem)
+          Right (later_values, after_later) =>
+            pure (Right (first_value :: later_values, after_later))
 
-execute_statement : Environment -> statement -> Either String (Environment, List String)
+execute_statement : Environment -> statement -> IO (Either String (Environment, List String))
 execute_statement environment (define_statement name initial) = do
-  (initial_value, after_initial) <- evaluate environment initial
-  Right (define_variable name initial_value after_initial, [])
+  result <- evaluate environment initial
+  case result of
+    Left problem => pure (Left problem)
+    Right (initial_value, after_initial) =>
+      pure (Right (define_variable name initial_value after_initial, []))
 execute_statement environment (expression_statement body) = do
-  (_, after_body) <- evaluate environment body
-  Right (after_body, [])
+  result <- evaluate environment body
+  case result of
+    Left problem => pure (Left problem)
+    Right (_, after_body) => pure (Right (after_body, []))
 execute_statement environment (log_statement arguments) = do
-  (values, after_arguments) <- evaluate_many environment arguments
-  Right (after_arguments, [joinBy " " (map render values)])
+  result <- evaluate_many environment arguments
+  case result of
+    Left problem => pure (Left problem)
+    Right (values, after_arguments) =>
+      pure (Right (after_arguments, [joinBy " " (map render values)]))
 execute_statement environment (block_statement statements) = execute_block environment statements
   where
-    execute_block : Environment -> List statement -> Either String (Environment, List String)
-    execute_block current [] = Right (current, [])
+    execute_block : Environment -> List statement -> IO (Either String (Environment, List String))
+    execute_block current [] = pure (Right (current, []))
     execute_block current (first :: rest) = do
-      (after_first, first_output) <- execute_statement current first
-      (after_rest, later_output) <- execute_block after_first rest
-      Right (after_rest, first_output ++ later_output)
+      first_result <- execute_statement current first
+      case first_result of
+        Left problem => pure (Left problem)
+        Right (after_first, first_output) => do
+          later_result <- execute_block after_first rest
+          case later_result of
+            Left problem => pure (Left problem)
+            Right (after_rest, later_output) =>
+              pure (Right (after_rest, first_output ++ later_output))
 execute_statement environment (if_statement condition yes_branch no_branch) = do
-  (condition_value, after_condition) <- evaluate environment condition
-  if truthy condition_value
-    then execute_statement after_condition yes_branch
-    else case no_branch of
-      Nothing => Right (after_condition, [])
-      Just branch => execute_statement after_condition branch
+  result <- evaluate environment condition
+  case result of
+    Left problem => pure (Left problem)
+    Right (condition_value, after_condition) =>
+      if truthy condition_value
+        then execute_statement after_condition yes_branch
+        else case no_branch of
+          Nothing => pure (Right (after_condition, []))
+          Just branch => execute_statement after_condition branch
 execute_statement environment loop@(while_statement condition body) = do
-  (condition_value, after_condition) <- evaluate environment condition
-  if truthy condition_value
-    then do
-      (after_body, body_output) <- execute_statement after_condition body
-      (after_loop, later_output) <- execute_statement after_body loop
-      Right (after_loop, body_output ++ later_output)
-    else Right (after_condition, [])
+  result <- evaluate environment condition
+  case result of
+    Left problem => pure (Left problem)
+    Right (condition_value, after_condition) =>
+      if truthy condition_value
+        then do
+          body_result <- execute_statement after_condition body
+          case body_result of
+            Left problem => pure (Left problem)
+            Right (after_body, body_output) => do
+              loop_result <- execute_statement after_body loop
+              case loop_result of
+                Left problem => pure (Left problem)
+                Right (after_loop, later_output) =>
+                  pure (Right (after_loop, body_output ++ later_output))
+        else pure (Right (after_condition, []))
 
-execute_statements : Environment -> List statement -> Either String (Environment, List String)
-execute_statements environment [] = Right (environment, [])
+execute_statements : Environment -> List statement -> IO (Either String (Environment, List String))
+execute_statements environment [] = pure (Right (environment, []))
 execute_statements environment (first :: rest) = do
-  (after_first, first_output) <- execute_statement environment first
-  (after_rest, later_output) <- execute_statements after_first rest
-  Right (after_rest, first_output ++ later_output)
+  first_result <- execute_statement environment first
+  case first_result of
+    Left problem => pure (Left problem)
+    Right (after_first, first_output) => do
+      later_result <- execute_statements after_first rest
+      case later_result of
+        Left problem => pure (Left problem)
+        Right (after_rest, later_output) =>
+          pure (Right (after_rest, first_output ++ later_output))
 
 public export
-run : String -> Either String (List String)
-run source = do
-  program <- parse source
-  (_, output) <- execute_statements [] program
-  Right output
+run : String -> IO (Either String (List String))
+run source =
+  case parse source of
+    Left problem => pure (Left problem)
+    Right program => do
+      result <- execute_statements [] program
+      case result of
+        Left problem => pure (Left problem)
+        Right (_, output) => pure (Right output)
