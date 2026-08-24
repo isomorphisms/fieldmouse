@@ -1,0 +1,7 @@
+package fieldmouse
+
+version = 0.1.0
+sourcedir = "."
+modules = Fieldmouse
+main = Main
+executable = fieldmouse

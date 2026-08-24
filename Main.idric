@@ -1,0 +1,32 @@
+module Main
+
+import Fieldmouse
+import System
+import System.File
+
+print_output : List String -> IO ()
+print_output [] = pure ()
+print_output (line :: rest) = do
+  putStrLn line
+  print_output rest
+
+run_source : String -> IO ()
+run_source source =
+  case run source of
+    Left problem => putStrLn ("fieldmouse: " ++ problem)
+    Right output => print_output output
+
+run_file : String -> IO ()
+run_file path = do
+  result <- readFile path
+  case result of
+    Left problem => putStrLn ("fieldmouse: cannot read " ++ path ++ ": " ++ show problem)
+    Right source => run_source source
+
+main : IO ()
+main = do
+  arguments <- getArgs
+  case arguments of
+    _ :: "-e" :: source :: [] => run_source source
+    _ :: path :: [] => run_file path
+    _ => putStrLn "usage: fieldmouse [-e javascript | file.js]"
