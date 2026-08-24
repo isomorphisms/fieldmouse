@@ -1,0 +1,97 @@
+module Tests
+
+import Fieldmouse
+import System
+
+fail : String -> IO ()
+fail message = do
+  putStrLn ("FAIL: " ++ message)
+  exitFailure
+
+pass : String -> IO ()
+pass name = putStrLn ("ok: " ++ name)
+
+assert_run : String -> String -> List String -> IO ()
+assert_run name source expected = do
+  result <- run source
+  case result of
+    Left problem => fail (name ++ " — " ++ problem)
+    Right actual =>
+      if actual == expected
+        then pass name
+        else fail (name ++ " — expected " ++ show expected ++ ", found " ++ show actual)
+
+assert_rejected : String -> String -> IO ()
+assert_rejected name source = do
+  result <- run source
+  case result of
+    Left _ => pass name
+    Right output => fail (name ++ " — unexpectedly ran with output " ++ show output)
+
+main : IO ()
+main = do
+  assert_run "multiplication binds before addition"
+    "console.log(2 + 3 * 4);"
+    ["14.0"]
+
+  assert_run "left arrow assigns toward the name"
+    "var answer ← 6 * 7; console.log(answer);"
+    ["42.0"]
+
+  assert_run "right arrow assigns toward the name"
+    "var answer; 6 * 7 → answer; console.log(answer);"
+    ["42.0"]
+
+  assert_run "equals compares rather than assigns"
+    "console.log(2 + 2 = 4);"
+    ["true"]
+
+  assert_run "not equals is the inequality relation"
+    "console.log(2 ≠ 3);"
+    ["true"]
+
+  assert_run "questioned equals is strict"
+    "console.log(0 = Ø, 0 ≟ Ø);"
+    ["true false"]
+
+  assert_run "empty set is false"
+    "if (Ø) console.log(\"wrong\"); else console.log(\"right\");"
+    ["right"]
+
+  assert_run "loop state survives its block"
+    "var total ← 0; var i ← 1; while (i <= 4) { total ← total + i; i ← i + 1; } console.log(total);"
+    ["10.0"]
+
+  assert_run "comments and escaped strings are preserved"
+    "// ignored\nconsole.log(\"line\\nnext\");"
+    ["line\nnext"]
+
+  assert_run "single equals compares without assigning"
+    "var answer ← 0; answer = 42; console.log(answer);"
+    ["0.0"]
+
+  assert_rejected "JavaScript declaration assignment is not Field Mouse"
+    "var answer = 42;"
+
+  assert_rejected "JavaScript equality spelling is not Field Mouse"
+    "console.log(1 == 1);"
+
+  assert_rejected "false is spelled with the empty set"
+    "console.log(false);"
+
+  assert_rejected "left arrow requires a name on the left"
+    "1 ← 2;"
+
+  assert_rejected "right arrow requires a name on the right"
+    "1 → 2;"
+
+  assert_rejected "unknown variables are runtime errors"
+    "console.log(missing);"
+
+  assert_rejected "unsupported remainder is an explicit error"
+    "console.log(5 % 2);"
+
+  assert_rejected "unterminated strings are lexical errors"
+    "console.log(\"missing);"
+
+  putStrLn "18 Field Mouse contract tests passed"

@@ -1,0 +1,7 @@
+package fieldmouse-tests
+
+version = 0.1.0
+sourcedir = "."
+modules = Fieldmouse, Tests
+main = Tests
+executable = fieldmouse-tests

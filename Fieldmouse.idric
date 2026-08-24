@@ -182,12 +182,16 @@ mutual
   parse_assignment input = do
     (left, rest) <- parse_or input
     case rest of
-      symbol_token "=" :: after_equals =>
+      symbol_token "←" :: after_arrow =>
         case left of
           variable_expression name => do
-            (right, remaining) <- parse_assignment after_equals
+            (right, remaining) <- parse_assignment after_arrow
             Right (assignment_expression name right, remaining)
           _ => Left "left side of assignment must be a variable"
+      symbol_token "→" :: word_token name :: remaining =>
+        Right (assignment_expression name left, remaining)
+      symbol_token "→" :: _ =>
+        Left "right side of rightward assignment must be a variable"
       _ => Right (left, rest)
 
   parse_or : Parser expression
@@ -197,7 +201,7 @@ mutual
   parse_and = parse_left_associative parse_equality ["&&"]
 
   parse_equality : Parser expression
-  parse_equality = parse_left_associative parse_comparison ["==", "!=", "===", "!=="]
+  parse_equality = parse_left_associative parse_comparison ["=", "≠", "≟"]
 
   parse_comparison : Parser expression
   parse_comparison = parse_left_associative parse_addition ["<", "<=", ">", ">="]
@@ -224,7 +228,8 @@ mutual
       Nothing => Left ("invalid number '" ++ text ++ "'")
   parse_primary (text_token text :: rest) = Right (literal_expression (string_value text), rest)
   parse_primary (word_token "true" :: rest) = Right (literal_expression (boolean_value True), rest)
-  parse_primary (word_token "false" :: rest) = Right (literal_expression (boolean_value False), rest)
+  parse_primary (word_token "Ø" :: rest) = Right (literal_expression (boolean_value False), rest)
+  parse_primary (symbol_token "Ø" :: rest) = Right (literal_expression (boolean_value False), rest)
   parse_primary (word_token "null" :: rest) = Right (literal_expression null_value, rest)
   parse_primary (word_token "undefined" :: rest) = Right (literal_expression undefined_value, rest)
   parse_primary (word_token name :: symbol_token "(" :: rest) =
@@ -272,8 +277,8 @@ mutual
   parse_statement (word_token keyword :: word_token name :: rest) =
     if elem keyword ["var", "let", "const"]
       then case rest of
-        symbol_token "=" :: after_equals => do
-          (initial, remaining) <- parse_expression after_equals
+        symbol_token "←" :: after_arrow => do
+          (initial, remaining) <- parse_expression after_arrow
           Right (define_statement name initial, drop_semicolon remaining)
         _ => Right (define_statement name (literal_expression undefined_value), drop_semicolon rest)
       else parse_other_statement (word_token keyword :: word_token name :: rest)
@@ -375,6 +380,31 @@ same_value (number_value left) (number_value right) = left == right
 same_value (string_value left) (string_value right) = left == right
 same_value _ _ = False
 
+coercive_equal : value -> value -> Bool
+coercive_equal undefined_value null_value = True
+coercive_equal null_value undefined_value = True
+coercive_equal undefined_value right = same_value undefined_value right
+coercive_equal left undefined_value = same_value left undefined_value
+coercive_equal null_value right = same_value null_value right
+coercive_equal left null_value = same_value left null_value
+coercive_equal (number_value left) (string_value right) =
+  case parseDouble right of
+    Just right_number => left == right_number
+    Nothing => False
+coercive_equal (string_value left) (number_value right) =
+  case parseDouble left of
+    Just left_number => left_number == right
+    Nothing => False
+coercive_equal (boolean_value left) right =
+  case number_from_value right of
+    Right right_number => (if left then 1.0 else 0.0) == right_number
+    Left _ => False
+coercive_equal left (boolean_value right) =
+  case number_from_value left of
+    Right left_number => left_number == (if right then 1.0 else 0.0)
+    Left _ => False
+coercive_equal left right = same_value left right
+
 calculate_numeric : String -> Double -> Double -> Either String value
 calculate_numeric "+" left right = Right (number_value (left + right))
 calculate_numeric "-" left right = Right (number_value (left - right))
@@ -390,10 +420,9 @@ calculate_numeric operator _ _ = Left ("unsupported numeric operator '" ++ opera
 calculate_binary : String -> value -> value -> Either String value
 calculate_binary "+" (string_value left) right = Right (string_value (left ++ render right))
 calculate_binary "+" left (string_value right) = Right (string_value (render left ++ right))
-calculate_binary "==" left right = Right (boolean_value (same_value left right))
-calculate_binary "===" left right = Right (boolean_value (same_value left right))
-calculate_binary "!=" left right = Right (boolean_value (not (same_value left right)))
-calculate_binary "!==" left right = Right (boolean_value (not (same_value left right)))
+calculate_binary "=" left right = Right (boolean_value (coercive_equal left right))
+calculate_binary "≠" left right = Right (boolean_value (not (coercive_equal left right)))
+calculate_binary "≟" left right = Right (boolean_value (same_value left right))
 calculate_binary operator left right = do
   left_number <- number_from_value left
   right_number <- number_from_value right
@@ -603,3 +632,4 @@ run source =
       case result of
         Left problem => pure (Left problem)
         Right (_, output) => pure (Right output)
+

@@ -1,21 +1,36 @@
-name: Edric rewrite
+name: Field Mouse contract
 
 on:
   push:
-    branches: [master, edric-rewrite]
+    branches: [master]
   pull_request:
 
 jobs:
-  build:
+  build-and-test:
+    name: build and test (${{ matrix.edric.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        edric:
+          - name: pinned
+            ref: 61970be77769f607cca8650bf424c0f0b22ddee7
+          - name: current
+            ref: main
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/checkout@v4
         with:
           repository: isomorphisms/Idric
-          ref: 61970be77769f607cca8650bf424c0f0b22ddee7
+          ref: ${{ matrix.edric.ref }}
           path: .tools/Idric
+
+      - name: Resolve Edric revision
+        id: edric-revision
+        working-directory: .tools/Idric
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Restore Edric bootstrap cache
         id: edric-cache
@@ -25,7 +40,7 @@ jobs:
             .tools/Idric/.tools
             .tools/Idric/bootstrap-build
             .tools/Idric/build
-          key: edric-ubuntu24-x64-61970be77769f607cca8650bf424c0f0b22ddee7
+          key: edric-${{ runner.os }}-${{ runner.arch }}-${{ steps.edric-revision.outputs.sha }}
 
       - name: Bootstrap Edric
         if: steps.edric-cache.outputs.cache-hit != 'true'
@@ -42,31 +57,32 @@ jobs:
             .tools/Idric/.tools
             .tools/Idric/bootstrap-build
             .tools/Idric/build
-          key: edric-ubuntu24-x64-61970be77769f607cca8650bf424c0f0b22ddee7
+          key: edric-${{ runner.os }}-${{ runner.arch }}-${{ steps.edric-revision.outputs.sha }}
 
       - name: Add Edric toolchain to PATH
         run: echo "$GITHUB_WORKSPACE/.tools/Idric/.tools/bin" >> "$GITHUB_PATH"
 
-      - name: Compile Fieldmouse
+      - name: Compile Field Mouse and its tests
         env:
           IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
-        run: .tools/Idric/build/exec/idris2 --build fieldmouse.ipkg
-
-      - name: Run interpreter smoke test
         run: |
-          output=$(build/exec/fieldmouse -e 'var total = 0; var i = 1; while (i <= 4) { total = total + i; i = i + 1; } console.log("sum", total); if (total === 10) console.log("ok");')
-          printf '%s\n' "$output"
-          test "$output" = "sum 10.0
-          ok"
+          .tools/Idric/build/exec/idris2 --build fieldmouse.ipkg
+          .tools/Idric/build/exec/idris2 --build tests.ipkg
+
+      - name: Run language contract tests
+        run: build/exec/fieldmouse-tests
 
       - name: Test native text file I/O
+        shell: bash
         run: |
+          set -euo pipefail
+
           work=$(mktemp -d)
           trap 'rm -rf "$work"' EXIT
           path="$work/note.txt"
-          script="$work/file-io.js"
+          script="$work/file-io"
 
-          printf 'var path = "%s"; console.log(fileExists(path)); writeText(path, "old"); writeText(path, "alpha"); appendText(path, " beta"); console.log(fileExists(path)); console.log(readText(path));\n' "$path" > "$script"
+          printf 'var path ← "%s"; console.log(fileExists(path)); writeText(path, "old"); writeText(path, "alpha"); appendText(path, " beta"); console.log(fileExists(path)); console.log(readText(path));\n' "$path" > "$script"
 
           output=$(build/exec/fieldmouse "$script")
           printf '%s\n' "$output"
@@ -75,14 +91,31 @@ jobs:
           alpha beta"
           test "$(cat "$path")" = "alpha beta"
 
-          if build/exec/fieldmouse -e "readText(\"$work/missing.txt\");" > "$work/missing.out" 2> "$work/missing.err"; then
+          if build/exec/fieldmouse -e "readText(\"$work/missing.txt\");" > "$work/missing.out" 2>&1; then
             echo "readText unexpectedly succeeded for a missing file" >&2
             exit 1
           fi
-          grep -F "fieldmouse: readText '$work/missing.txt': File Not Found" "$work/missing.err"
+          grep -F "fieldmouse: readText '$work/missing.txt': File Not Found" "$work/missing.out"
 
-          if build/exec/fieldmouse -e 'writeText("only-one");' > "$work/arity.out" 2> "$work/arity.err"; then
+          if build/exec/fieldmouse -e 'writeText("only-one");' > "$work/arity.out" 2>&1; then
             echo "writeText unexpectedly accepted one argument" >&2
             exit 1
           fi
-          grep -F "fieldmouse: writeText: expected 2 arguments, found 1" "$work/arity.err"
+          grep -F "fieldmouse: writeText: expected 2 arguments, found 1" "$work/arity.out"
+
+      - name: Verify command-line failures are failures
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if build/exec/fieldmouse -e 'var answer = 42;' >invalid.out 2>&1; then
+            echo 'invalid Field Mouse source returned success' >&2
+            exit 1
+          fi
+          grep -F 'fieldmouse:' invalid.out
+
+          if build/exec/fieldmouse >usage.out 2>&1; then
+            echo 'invalid command line returned success' >&2
+            exit 1
+          fi
+          grep -F 'usage: fieldmouse' usage.out
