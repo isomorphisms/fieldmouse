@@ -1,41 +1,56 @@
 # Fieldmouse
 
-Fieldmouse is a small JavaScript interpreter being rewritten in **Edriç**.
+Fieldmouse is a small language for the Node-style build-script work that should not require all of Node. Its active implementation is written in **Edriç**.
 
-The repository started from MuJS. The C implementation remains in Git history and on `master`; the `edric-rewrite` line deliberately does not preserve MuJS's `src` / `include` / `docs` / `tests` directory layout. The active implementation is meant to be visible when the repository opens.
+The repository started from MuJS. That C implementation remains recoverable from Git history; the active Edriç implementation is now on `master`.
+
+## Language contract
+
+The first syntax contract is deliberately small:
+
+- `name ← value` assigns leftward;
+- `value → name` assigns rightward;
+- `=` compares with primitive coercion and is never assignment;
+- `≠` is inequality;
+- `≟` is strict, non-coercive equality;
+- `Ø` is false.
+
+Declaration families, full `let` / `const` scope behavior, the source-file extension, and any ordinary-JavaScript compatibility mode remain provisional. Tests do not silently settle those questions.
 
 ## Current slice
 
 The Edriç interpreter currently has:
 
-- JavaScript values represented by Edriç `choice` declarations;
-- a lexer for identifiers, decimal numbers, strings, comments, and common operators;
+- primitive dynamic values represented by Edriç `choice` declarations;
+- a lexer for identifiers, decimal numbers, strings, comments, and operators;
 - precedence parsing for assignment, Boolean, comparison, and arithmetic expressions;
-- `var`, `let`, and `const` bindings;
+- provisional `var`, `let`, and `const` bindings;
 - blocks, `if` / `else`, and `while`;
 - `console.log(...)`;
-- execution from `-e` or a `.js` file.
+- execution from `-e` or a source file.
 
-This is intentionally smaller than ECMAScript and much smaller than Node. The next useful compatibility work is arrays and objects, functions, property access and calls, then the small `fs` / `path` / `process` surface that build scripts actually use. Exact standards compliance is not the design constraint.
+This is intentionally smaller than ECMAScript and much smaller than Node. Arrays and objects, functions, property access and calls, then the small `fs` / `path` / `process` surface required by real build scripts remain to be implemented.
 
-## Build
+## Build and test
 
-Fieldmouse is pinned in CI to Edriç commit:
+CI builds with both the reproducible pinned Edriç revision and current Idriç `main`.
 
-`61970be77769f607cca8650bf424c0f0b22ddee7`
-
-With that compiler available:
+With either compiler available:
 
 ```text
 idris2 --build fieldmouse.ipkg
+idris2 --build tests.ipkg
+build/exec/fieldmouse-tests
 ```
 
 Then:
 
 ```text
-build/exec/fieldmouse -e 'var x = 6 * 7; console.log(x);'
-build/exec/fieldmouse script.js
+build/exec/fieldmouse -e 'var answer ← 6 * 7; console.log(answer);'
+build/exec/fieldmouse script
 ```
+
+Parse errors, runtime errors, unreadable files, and invalid command lines return a failing process status.
 
 ## Layout
 
@@ -43,7 +58,8 @@ The active code is intentionally flat:
 
 - `Fieldmouse.idric` — language model, lexer, parser, and interpreter;
 - `Main.idric` — command-line entry point;
-- `fieldmouse.ipkg` — build description.
+- `Tests.idric` — executable language-contract tests;
+- `fieldmouse.ipkg` and `tests.ipkg` — application and test builds.
 
 The only directory retained is `.github`, for automated builds.
 
